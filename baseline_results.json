@@ -1,0 +1,61 @@
+{
+  "model": "gpt-4o-mini",
+  "dataset": "sample_sales_data.csv",
+  "episodes_per_task": 1,
+  "task_results": [
+    {
+      "task": "detect_missing",
+      "difficulty": "easy",
+      "steps": 3,
+      "total_reward": 1.75,
+      "history": [
+        "clean_data",
+        "eda",
+        "missing"
+      ],
+      "penalties": 0,
+      "avg_reward": 1.75
+    },
+    {
+      "task": "find_correlation",
+      "difficulty": "medium",
+      "steps": 10,
+      "total_reward": 3.3,
+      "history": [
+        "clean_data",
+        "eda",
+        "feature_engineering",
+        "train_model",
+        "correlation",
+        "insight",
+        "insight",
+        "train_model",
+        "train_model",
+        "train_model"
+      ],
+      "penalties": 0,
+      "avg_reward": 3.3
+    },
+    {
+      "task": "generate_insight",
+      "difficulty": "hard",
+      "steps": 10,
+      "total_reward": 3.062,
+      "history": [
+        "clean_data",
+        "eda",
+        "feature_engineering",
+        "train_model",
+        "insight",
+        "insight",
+        "insight",
+        "insight",
+        "insight",
+        "insight"
+      ],
+      "penalties": 0,
+      "avg_reward": 3.062
+    }
+  ],
+  "baseline_score": 2.704
+}

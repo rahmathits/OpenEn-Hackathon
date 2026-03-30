@@ -1,0 +1,16 @@
+name: eda_agent_env
+version: 1.0
+description: EDA agent environment
+
+observation_space:
+  dataset_head: list
+  columns: list
+  stats: dict
+
+action_space:
+  action_type: str
+  parameters: dict
+
+reward:
+  type: float
+  range: [-1, 1]
