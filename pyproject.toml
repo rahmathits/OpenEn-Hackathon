@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "eda-openenv"
+version = "1.0.0"
+description = "A real-world Reinforcement Learning environment for EDA pipeline agents, built on the OpenEnv standard."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Rahmath", email = "rahmathits@gmail.com" }
+]
+keywords = [
+    "reinforcement-learning",
+    "openenv",
+    "eda",
+    "exploratory-data-analysis",
+    "rl-environment",
+    "machine-learning",
+    "ai-agent",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.0.0",
+    "pydantic>=2.0.0",
+    "numpy>=1.26.0",
+    "scikit-learn>=1.4.0",
+    "scipy>=1.12.0",
+]
+
+[project.optional-dependencies]
+# pip install eda-openenv[app]
+app = [
+    "streamlit>=1.35.0",
+]
+# pip install eda-openenv[server]
+server = [
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+]
+# pip install eda-openenv[baseline]
+baseline = [
+    "openai>=1.30.0",
+]
+# pip install eda-openenv[all]
+all = [
+    "streamlit>=1.35.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.30.0",
+    "openai>=1.30.0",
+]
+
+[project.urls]
+Homepage = "https://huggingface.co/spaces/Rahmath1/OpenEnv"
+Repository = "https://github.com/rahmathits/OpenEn-Hackathon"
+"Bug Tracker" = "https://github.com/rahmathits/OpenEn-Hackathon/issues"
+
+[project.scripts]
+# CLI entrypoint: run baseline from anywhere after pip install
+eda-baseline = "baseline_agent:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["env*", "tools*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.txt", "*.toml"]
