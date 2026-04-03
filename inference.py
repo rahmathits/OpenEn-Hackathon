@@ -1,19 +1,24 @@
 """
-baseline_agent.py
+inference.py
+===================================
+Inference script for EDA OpenEnv Agent — OpenEnv Hackathon
 
-Baseline inference script for EDA OpenEnv.
-
-Uses the OpenAI API to run an LLM agent against the environment.
-Reads credentials from environment variables.
-Produces a reproducible baseline score across all 3 tasks.
+MANDATORY environment variables:
+    API_BASE_URL   The API endpoint for the LLM (e.g. https://router.huggingface.co/v1)
+    MODEL_NAME     The model identifier to use for inference (e.g. Qwen/Qwen2.5-72B-Instruct)
+    HF_TOKEN       Your Hugging Face API key
 
 Usage:
-    export OPENAI_API_KEY=sk-...
-    python baseline_agent.py --csv data/sample.csv
-    python baseline_agent.py --csv data/sample.csv --model gpt-4o --episodes 3
+    export API_BASE_URL="https://router.huggingface.co/v1"
+    export MODEL_NAME="Qwen/Qwen2.5-72B-Instruct"
+    export HF_TOKEN="hf_..."
+
+    python inference.py --csv data/sample.csv
+    python inference.py --csv data/sample.csv --episodes 3
 """
 
 import os
+import re
 import json
 import argparse
 import pandas as pd
@@ -23,12 +28,24 @@ from env.eda_env import EDAEnv, TASKS, TASK_ACTION_MAP
 from env.models import Action
 from pipeline import validate_action, apply_order_bonus, PIPELINE, get_completed_actions
 
+# ─────────────────────────────────────────
+# Mandatory env var config
+# ─────────────────────────────────────────
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+MODEL_NAME   = os.getenv("MODEL_NAME")
 
 # ─────────────────────────────────────────
-# Constants
+# Inference config
 # ─────────────────────────────────────────
-VALID_ACTIONS = ["clean_data", "eda", "feature_engineering", "train_model",
-                 "missing", "correlation", "insight"]
+MAX_STEPS   = 10
+TEMPERATURE = 0.0   # deterministic — reproducible baseline score
+MAX_TOKENS  = 100
+
+VALID_ACTIONS = [
+    "clean_data", "eda", "feature_engineering", "train_model",
+    "missing", "correlation", "insight",
+]
 
 SYSTEM_PROMPT = """You are an expert data science agent working inside an EDA (Exploratory Data Analysis) environment.
 
@@ -52,8 +69,7 @@ You cannot skip steps. After completing the pipeline, use the task-specific acti
 Respond with ONLY a JSON object, nothing else:
 {"action": "<action_name>", "reason": "<one sentence why>"}
 
-Valid actions: clean_data, eda, feature_engineering, train_model, missing, correlation, insight
-"""
+Valid actions: clean_data, eda, feature_engineering, train_model, missing, correlation, insight"""
 
 
 # ─────────────────────────────────────────
@@ -61,30 +77,34 @@ Valid actions: clean_data, eda, feature_engineering, train_model, missing, corre
 # ─────────────────────────────────────────
 class LLMAgent:
 
-    def __init__(self, model: str = "gpt-4o-mini", temperature: float = 0.0):
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
+    def __init__(self):
+        if not API_KEY:
             raise EnvironmentError(
-                "OPENAI_API_KEY environment variable is not set.\n"
-                "  export OPENAI_API_KEY=sk-..."
+                "HF_TOKEN environment variable is not set.\n"
+                "  export HF_TOKEN=hf_..."
             )
-        self.client = OpenAI(api_key=api_key)
-        self.model = model
-        self.temperature = temperature  # 0.0 = deterministic, reproducible
+        if not MODEL_NAME:
+            raise EnvironmentError(
+                "MODEL_NAME environment variable is not set.\n"
+                "  export MODEL_NAME=Qwen/Qwen2.5-72B-Instruct"
+            )
+
+        self.client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+        self.model  = MODEL_NAME
+
+        print(f"  API Base  : {API_BASE_URL}")
+        print(f"  Model     : {self.model}")
 
     def select_action(self, obs, history: list) -> tuple[str, str]:
-        """
-        Ask the LLM to choose the next action given the current observation.
-        Returns (action_type, reason).
-        """
-        completed = get_completed_actions(history)
+        """Ask the LLM to choose the next action. Returns (action_type, reason)."""
+        completed          = get_completed_actions(history)
         next_pipeline_step = next((s for s in PIPELINE if s not in completed), "pipeline complete")
 
         user_message = f"""## Current Observation
 
-Task: {obs.task}
-Columns: {obs.columns}
-History (actions taken so far): {obs.history}
+Task      : {obs.task}
+Columns   : {obs.columns}
+History   : {obs.history}
 
 ## Dataset Stats (first 5 rows):
 {json.dumps(obs.dataset_head, indent=2)}
@@ -95,28 +115,37 @@ Next required   : {next_pipeline_step}
 
 What is the single best action to take next?"""
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            temperature=self.temperature,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": user_message},
-            ],
-        )
-
-        raw = response.choices[0].message.content.strip()
-
         try:
-            parsed = json.loads(raw)
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                temperature=TEMPERATURE,
+                max_tokens=MAX_TOKENS,
+                stream=False,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_message},
+                ],
+            )
+            raw = completion.choices[0].message.content or ""
+        except Exception as exc:
+            print(f"  [warn] Model request failed: {exc}. Using fallback.")
+            raw = ""
+
+        # Parse JSON response
+        try:
+            # Strip any markdown fences the model might add
+            clean = re.sub(r"```json|```", "", raw).strip()
+            parsed = json.loads(clean)
             action = parsed.get("action", "").strip()
             reason = parsed.get("reason", "")
             if action not in VALID_ACTIONS:
-                print(f"  [warn] LLM returned unknown action '{action}', defaulting to pipeline step.")
+                print(f"  [warn] Unknown action '{action}', falling back to pipeline step.")
                 action = next_pipeline_step if next_pipeline_step != "pipeline complete" else "eda"
+                reason = "fallback — invalid action returned"
         except json.JSONDecodeError:
-            print(f"  [warn] LLM response was not valid JSON: {raw!r}")
+            print(f"  [warn] Could not parse model response: {raw!r}")
             action = next_pipeline_step if next_pipeline_step != "pipeline complete" else "eda"
-            reason = "fallback due to parse error"
+            reason = "fallback — JSON parse error"
 
         return action, reason
 
@@ -127,41 +156,40 @@ What is the single best action to take next?"""
 def run_episode(env: EDAEnv, agent: LLMAgent, task_override: dict | None = None, verbose: bool = True) -> dict:
     obs = env.reset()
 
-    # Force a specific task for reproducible scoring across all 3 tasks
+    # Force specific task for reproducible scoring across all 3 tasks
     if task_override:
         env.task = task_override.copy()
         obs = env._get_obs()
 
-    history = []
+    history      = []
     total_reward = 0.0
-    step = 0
+    step         = 0
 
     if verbose:
         print(f"\n{'─' * 60}")
         print(f"  Task       : {obs.task}")
         print(f"  Objective  : {env.task['objective']}")
         print(f"  Difficulty : {env.task['difficulty']}")
-        print(f"  Model      : {agent.model}")
         print(f"{'─' * 60}")
 
     while True:
         action_type, reason = agent.select_action(obs, history)
 
-        # Pipeline validation
+        # Pipeline ordering validation
         penalty = validate_action(action_type, history)
         if penalty:
             reward = penalty
-            done = False
+            done   = False
             if verbose:
                 print(f"  Step {step+1:02d} | {action_type:<22} | score={reward.score:.4f} | ⚠️  {reward.feedback}")
         else:
-            action = Action(action_type=action_type)
+            action         = Action(action_type=action_type)
             obs, reward, done, info = env.step(action)
-            reward = apply_order_bonus(action_type, history, reward)
+            reward         = apply_order_bonus(action_type, history, reward)
             if verbose:
                 status = "✅ DONE" if done else "▶️ "
                 print(f"  Step {step+1:02d} | {action_type:<22} | score={reward.score:.4f} | {status}")
-                print(f"         reason : {reason}")
+                print(f"         reason  : {reason}")
                 print(f"         feedback: {reward.feedback}")
 
         history.append({
@@ -172,7 +200,7 @@ def run_episode(env: EDAEnv, agent: LLMAgent, task_override: dict | None = None,
             "done":       done,
         })
         total_reward += reward.score
-        step += 1
+        step         += 1
 
         if done or step >= env.max_steps:
             break
@@ -195,33 +223,34 @@ def run_episode(env: EDAEnv, agent: LLMAgent, task_override: dict | None = None,
 # ─────────────────────────────────────────
 # Main — runs all 3 tasks for reproducible baseline
 # ─────────────────────────────────────────
-def main():
-    parser = argparse.ArgumentParser(description="EDA OpenEnv — LLM Baseline Agent")
-    parser.add_argument("--csv",      required=True,          help="Path to CSV dataset")
-    parser.add_argument("--model",    default="gpt-4o-mini",  help="OpenAI model (default: gpt-4o-mini)")
-    parser.add_argument("--steps",    type=int, default=10,   help="Max steps per episode (default: 10)")
-    parser.add_argument("--episodes", type=int, default=1,    help="Runs per task for averaging (default: 1)")
-    parser.add_argument("--quiet",    action="store_true",    help="Suppress per-step output")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="EDA OpenEnv — LLM Inference Script")
+    parser.add_argument("--csv",      required=True,        help="Path to CSV dataset")
+    parser.add_argument("--steps",    type=int, default=10, help="Max steps per episode (default: 10)")
+    parser.add_argument("--episodes", type=int, default=1,  help="Runs per task for averaging (default: 1)")
+    parser.add_argument("--quiet",    action="store_true",  help="Suppress per-step output")
     args = parser.parse_args()
 
-    # ── Load data ────────────────────────────────────────────────────────
-    df = pd.read_csv("sample_sales_data.csv")
-    print(f"\nDataset loaded : {df.shape[0]} rows × {df.shape[1]} cols")
-    print(f"Columns        : {list(df.columns)}")
-    print(f"Model          : {args.model}")
-    print(f"Episodes/task  : {args.episodes}")
+    # ── Load dataset ─────────────────────────────────────────────────────
+    df = pd.read_csv(args.csv)
+    print(f"\n{'═' * 60}")
+    print(f"  EDA OpenEnv — Inference Script")
+    print(f"{'═' * 60}")
+    print(f"  Dataset        : {args.csv} ({df.shape[0]} rows × {df.shape[1]} cols)")
+    print(f"  Columns        : {list(df.columns)}")
+    print(f"  Episodes/task  : {args.episodes}")
 
     # ── Init ─────────────────────────────────────────────────────────────
     env   = EDAEnv(df, max_steps=args.steps)
-    agent = LLMAgent(model=args.model, temperature=0.0)
+    agent = LLMAgent()
 
-    # ── Run all 3 tasks (reproducible baseline) ───────────────────────────
+    # ── Run all 3 tasks — reproducible baseline score ─────────────────────
     all_results = []
 
     for task in TASKS:
         task_results = []
         print(f"\n{'═' * 60}")
-        print(f"  Running task: {task['name']} (difficulty: {task['difficulty']})")
+        print(f"  Task: {task['name']}  (difficulty: {task['difficulty']})")
         print(f"{'═' * 60}")
 
         for ep in range(args.episodes):
@@ -238,7 +267,7 @@ def main():
     print("  BASELINE SCORE SUMMARY")
     print(f"{'═' * 60}")
     print(f"  {'Task':<25} {'Difficulty':<12} {'Steps':<8} {'Penalties':<10} {'Avg Reward'}")
-    print(f"  {'─'*55}")
+    print(f"  {'─' * 57}")
 
     total_score = 0.0
     for r in all_results:
@@ -246,21 +275,22 @@ def main():
         total_score += r["avg_reward"]
 
     baseline_score = round(total_score / len(all_results), 4)
-    print(f"  {'─'*55}")
-    print(f"  {'BASELINE SCORE (mean across tasks)':<46} {baseline_score:.4f}")
+    print(f"  {'─' * 57}")
+    print(f"  {'BASELINE SCORE (mean across all tasks)':<48} {baseline_score:.4f}")
     print(f"{'═' * 60}\n")
 
-    # ── Write results to JSON for CI / judging ────────────────────────────
+    # ── Save results for CI / judging ─────────────────────────────────────
     output = {
-        "model":          args.model,
-        "dataset":        args.csv,
+        "api_base_url":      API_BASE_URL,
+        "model":             MODEL_NAME,
+        "dataset":           args.csv,
         "episodes_per_task": args.episodes,
-        "task_results":   all_results,
-        "baseline_score": baseline_score,
+        "task_results":      all_results,
+        "baseline_score":    baseline_score,
     }
     with open("baseline_results.json", "w") as f:
         json.dump(output, f, indent=2)
-    print(f"Results saved to baseline_results.json\n")
+    print(f"Results saved → baseline_results.json\n")
 
 
 if __name__ == "__main__":
